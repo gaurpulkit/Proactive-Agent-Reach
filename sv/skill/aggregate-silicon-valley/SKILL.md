@@ -4,7 +4,7 @@ description: >
   Run the daily aggregation for Keeping Up with Silicon Valley (induscore.site/sv): collect startup, funding,
   launch, founder and VC stories from the configured sources (news, essays, YouTube, Reddit, App Store chart
   movers; 小红书 and X only with a founder's login), curate them, persist them to the VM database through the
-  site's ingest API, verify they are live, and propose up to 3 movers to the founders' desk. Also records a founder's
+  site's ingest API, verify they are live, and propose up to 3 movers (publishing those scoring 45 or more). Also records a founder's
   research runs (verdicts and every scored idea) on the private Research page. Use when the user says /aggregate-silicon-valley
   [YYYY-MM-DD], "run today's Silicon Valley feed", "aggregate the SV feed", "backfill the feed for <date>",
   "rerun the startup feed", or asks why an edition is missing or partial. Not for changing the site's code.
@@ -15,7 +15,8 @@ description: >
 You are the orchestrator of one edition of **Keeping Up with Silicon Valley** (https://induscore.site/sv).
 Scripts do the fetching and the writing; you do the judgment: which stories matter, what kind each is,
 which duplicates are the same event, and a one-line context note grounded in the source. This skill is
-the **only** way stories get into the feed: there is no cron job or hosted agent, by design.
+the **only** way stories get into the feed. Every morning a scheduler starts it headless in Claude Code
+(see "The daily schedule"); a founder can also run it by hand.
 
 Paths below are relative to this skill's directory (`~/.claude/skills/aggregate-silicon-valley/` when
 installed by teamctx). Use `python3 -I` so nothing from the current directory is imported.
@@ -173,15 +174,33 @@ f. For each pick, open the pages you cite, then write one file under `${TMPDIR:-
      wedge 10, market 10, future 15, moat 10, whitespace 5) for one market you name in `notes.score.market`,
      with a one-line verdict. Score honestly; if the total is under 40, do not propose it;
    - `item_urls`: stories in today's edition about it, if any.
-g. Send them with `python3 -I scripts/ingest.py movers --propose <file.json>`. It refuses the whole file,
-   before sending anything, if it has more than 3 movers, a `status`, an id, name or site that already
-   exists, or a mover without a sourced traction line, a take or a score.
+g. Send them with `python3 -I scripts/ingest.py movers --propose <file.json> --publish-min 45`. It refuses the
+   whole file, before sending anything, if it has more than 3 movers, a `status`, an id, name or site that
+   already exists, or a mover without a sourced traction line, a take or a score. Proposals scoring 45 or
+   more go straight on the public list (`published` in its report); the rest wait on the desk.
 
 **6. Report** to the user, from `report.json`, without rounding up: edition date and URL, stories in the
 edition, inserted/updated/merged/rejected, sources that worked, those that failed (with the error) and
 those skipped because they need a login, whether the database and page checks passed, and the run status
 (`complete` or `partial`). Then the movers you proposed (id, name, score, market, the signal behind it) or
 why you proposed none. Say plainly if anything failed.
+
+## The daily schedule
+
+Every morning at 07:00 India time the edition for the Pacific date that is ending (yesterday's India date)
+is run headless by `scripts/daily.sh`, from whichever machine gets there first: the VM and each founder's
+laptop. The scheduler calls it every 20 minutes. It does nothing before the machine's start time, and nothing
+once a run for that edition has finished after 07:00 India time today, from any machine (it asks the ingest
+API). Machines are staggered rather than locked: duplicate runs are harmless.
+
+- Install on a laptop or the VM: `bash scripts/install-schedule.sh --at 07:00` (launchd on a Mac, crontab on
+  Linux). The start time is India time, whatever the machine's own time zone; use a later one (for example
+  `--at 08:30`) on a backup machine. `--uninstall` removes it.
+- Needs this machine's ingest token (One-time setup) and a Claude Code login that works without a terminal:
+  `claude -p "say ok"`. Where nobody logs in interactively (the VM), run `claude setup-token` once and put
+  `CLAUDE_CODE_OAUTH_TOKEN=...` in `~/.config/keeping-up-sv/schedule.env` (mode 600).
+- Logs and state: `~/.local/state/keeping-up-sv/daily/<edition>.log`. Each machine tries an edition at most
+  twice a day (`SV_DAILY_TRIES`). A backfill or test: `SV_EDITION=YYYY-MM-DD bash scripts/daily.sh --now`.
 
 ## Movers to watch
 
@@ -190,10 +209,12 @@ daily news. Behind the founders' unlock the same page is their **desk**: a queue
 an office-hours score, votes (with reasons), a stage (new, researching, building, passed) and copyable next
 steps (an REA prompt, a build brief, a scoring prompt).
 
-**A run proposes movers; only a founder publishes.** A mover sent without `status` is `proposed`: it waits
-in the desk's queue and appears on no public page, feed, sitemap or story until a founder publishes it there.
-Send `"status": "watching"` only when a founder told you to put it straight on the list. Each daily run
-proposes at most 3 (step 5 of the run, always with `--propose`).
+**A run proposes movers; the strong ones publish themselves.** A mover sent without `status` is `proposed`:
+it waits in the desk's queue and appears on no public page, feed, sitemap or story until a founder publishes
+it there. The founders' standing rule (Pulkit, 2026-10-24) is that a run's proposal scoring 45 or more on the
+office-hours rubric is published by the run itself (`--publish-min 45`); a founder can still pass or archive
+it from the desk. Otherwise send `"status": "watching"` only when a founder told you to put it straight on
+the list. Each daily run proposes at most 3 (step 5 of the run, always with `--propose --publish-min 45`).
 
 **Before proposing**, read what the founders thought of the last ones:
 `python3 -I scripts/ingest.py feedback`. Propose more like the upvoted ones and the ones in "researching" or

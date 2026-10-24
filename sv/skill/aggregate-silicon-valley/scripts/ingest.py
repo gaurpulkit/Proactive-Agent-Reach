@@ -5,6 +5,7 @@
   python3 ingest.py --check                     # token + API reachability only
   python3 ingest.py movers movers.json          # propose/update movers (new ones wait on the founders' desk)
   python3 ingest.py movers --propose new.json   # a run's proposals: at most 3, new ids only, scored
+  python3 ingest.py movers --propose new.json --publish-min 45   # ...and publish the ones scoring 45 or more
   python3 ingest.py movers --list               # every mover: id, kind, status, name
   python3 ingest.py link MOVER_ID STORY_URL...  # point stories already in the feed at a mover
   python3 ingest.py archive MOVER_ID            # stop watching a mover (hides it from the site)
@@ -275,6 +276,13 @@ def proposal_problems(movers: list[dict], existing: list[dict]) -> list[str]:
     return out
 
 
+def score_total(m: dict) -> int:
+    """A mover's office-hours total: the sum of its rubric lines (0 when unscored)."""
+    score = (m.get("notes") or {}).get("score") if isinstance(m.get("notes"), dict) else None
+    lines = score.get("lines") if isinstance(score, dict) else None
+    return sum(v for v in lines.values() if isinstance(v, int)) if isinstance(lines, dict) else 0
+
+
 # ---------------------------------------------------------------- research
 
 RESEARCH_CUTOFF = 40
@@ -443,7 +451,12 @@ def cmd_movers(argv: list[str]) -> None:
     ap.add_argument("--propose", action="store_true",
                     help=f"a run's proposals: at most {MAX_PROPOSALS}, new ids, names and sites only, no status, each "
                          "with a sourced traction line, notes.take and notes.score; refused before sending otherwise")
+    ap.add_argument("--publish-min", type=int, metavar="SCORE",
+                    help="with --propose: publish (status watching) the proposals whose office-hours total is at "
+                         "least SCORE; the rest wait on the founders' desk")
     args = ap.parse_args(argv)
+    if args.publish_min is not None and not args.propose:
+        ap.error("--publish-min goes with --propose")
     base, token = connection()
     if args.list:
         status, res = call("GET", f"{base}/api/ingest/movers", token)
@@ -462,6 +475,13 @@ def cmd_movers(argv: list[str]) -> None:
             sys.exit(f"could not list the existing movers to check the proposals against: HTTP {status} {listing}")
         if problems := proposal_problems(movers, listing.get("movers", [])):
             sys.exit("proposals refused, nothing was sent:\n  " + "\n  ".join(problems[:30]))
+    # the founders' standing rule (2026-10-24): a proposal at or above the bar goes straight on the list
+    published = []
+    if args.publish_min is not None:
+        for m in movers:
+            if score_total(m) >= args.publish_min:
+                m["status"] = "watching"
+                published.append(m["id"])
     results: list[dict] = []
     errors: list[str] = []
     for i in range(0, len(movers), MOVER_BATCH):
@@ -495,6 +515,7 @@ def cmd_movers(argv: list[str]) -> None:
     report = {
         "sent": len(movers), "inserted": sum(r["outcome"] == "inserted" for r in results),
         "updated": sum(r["outcome"] == "updated" for r in results), "rejected": rejected,
+        "published": published, "scores": {m["id"]: score_total(m) for m in movers if args.propose},
         "links": {r["id"]: {"linked": r.get("linked", 0), "missing": r.get("missing", [])} for r in results if r["outcome"] != "rejected"},
         "errors": errors, "db_verified": not missing_db and status == 200, "missing_in_db": missing_db,
         "pages_verified": not page_problems, "page_problems": page_problems,

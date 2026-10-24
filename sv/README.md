@@ -44,8 +44,10 @@ Claude Code (Pulkit or Michael)                         visitors, crawlers
   Same pattern as teamctx.
 - **Freshness**: pages render per request from Next's data cache (5 minutes); every successful ingest call
   clears that cache, so new stories appear on the next request without a redeploy.
-- **No scheduler**: nothing collects content on its own. The VM cron entries tagged `keeping-up-sv-*` only
-  keep the API and tunnel alive and re-announce the tunnel URL every 6 hours (ntfy keeps messages ~12 hours).
+- **Schedule**: the daily edition is run by Claude Code, headless, from `skill/aggregate-silicon-valley/scripts/daily.sh`
+  at 07:00 India time on whichever machine is up first (see "Daily aggregation"). The other VM cron entries tagged
+  `keeping-up-sv-*` keep the API and tunnel alive and re-announce the tunnel URL every 6 hours (ntfy keeps
+  messages ~12 hours).
 
 ## Daily aggregation
 
@@ -53,6 +55,15 @@ In Claude Code: `/aggregate-silicon-valley` (today, Pacific time) or `/aggregate
 The skill (`skill/aggregate-silicon-valley/SKILL.md`) collects, has Claude curate, persists, then verifies
 the database and the public page. Reruns and backfills are safe: stories upsert by canonical URL and each
 story belongs to exactly one edition.
+
+**Every morning, unattended.** `bash skill/aggregate-silicon-valley/scripts/install-schedule.sh --at 07:00` puts
+`daily.sh` on a 20-minute launchd (Mac) or cron (Linux) timer on that machine. From the start time (India time)
+it runs `/aggregate-silicon-valley <edition>` with `claude -p` for the Pacific date that is ending, unless the
+ingest API shows a run for that edition finished after 07:00 India time today, from any machine. Each founder's
+laptop and the VM can carry it, staggered (for example 07:00, 07:45, 08:30); a duplicate run only upserts. The
+machine needs its own ingest token and a Claude Code login that works headless (`claude -p "say ok"`; on the VM,
+`claude setup-token` and `CLAUDE_CODE_OAUTH_TOKEN` in `~/.config/keeping-up-sv/schedule.env`). Logs:
+`~/.local/state/keeping-up-sv/daily/<edition>.log`.
 
 One-time per person: an ingest token in `~/.config/keeping-up-sv/ingest.env` (command in SKILL.md). Tokens
 are per person (`manage.py issue-token <name>`), stored only as sha256 on the VM, revocable
@@ -128,10 +139,12 @@ The public list sorts by **Trending** (most stories in the last 14 days) or **Ne
   the source apart), a build brief, and a scoring prompt whose result goes back with `ingest.py notes`;
 - a log of every change (`mover_events`) on `/sv/movers/updates`, with who did what.
 
-Each daily run proposes at most three movers (`ingest.py movers --propose`), from the App Store chart movers and
+Each daily run proposes at most three movers (`ingest.py movers --propose --publish-min 45`), from the App Store chart movers and
 the day's strongest signals (a round, a public revenue figure, a chart jump, unusual engagement). It reads the
 votes and reasons with `ingest.py feedback` first, so the founders' calls steer what gets found next, and the
-script refuses a proposal for anything already on the desk (same id, name or site).
+script refuses a proposal for anything already on the desk (same id, name or site). A proposal scoring 45 or
+more on the rubric goes straight on the public list (the founders' rule since 2026-10-24); the rest wait in the
+queue, and a founder can still pass or archive any of them from the desk.
 
 **Research.** `/sv/movers/research` (founders only; anyone else gets a 404) keeps every research run: a prompt
 from a founders' call, a lead, a rerun on new sources. Each run has its verdict, how it was found, what it found

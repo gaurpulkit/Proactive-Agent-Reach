@@ -177,3 +177,40 @@ def test_propose_checks_before_sending(monkeypatch, tmp_path, capsys):
     with pytest.raises(SystemExit, match="proposals refused, nothing was sent"):
         ingest.cmd_movers(["--propose", str(f)])
     assert sent == []
+
+
+def test_publish_min_publishes_only_proposals_at_or_above_the_bar(monkeypatch, tmp_path, capsys):
+    low = {**SCORE, "lines": {**SCORE["lines"], "demand": 0}}   # 50
+    sent, stored = [], {m["id"]: m for m in EXISTING}
+
+    def fake_call(method, url, token=None, body=None, timeout=60):
+        if method == "GET" and url.endswith("/api/ingest/movers"):
+            return 200, {"movers": list(stored.values())}
+        if method == "GET":   # a public mover page
+            return 200, "<h1>High Thing</h1>"
+        sent.append(body)
+        for m in body["movers"]:
+            stored[m["id"]] = {**m, "status": m.get("status", "proposed")}
+        return 200, {"results": [{"id": m["id"], "outcome": "inserted"} for m in body["movers"]]}
+
+    monkeypatch.setattr(ingest, "call", fake_call)
+    monkeypatch.setattr(ingest, "connection", lambda: ("https://example.invalid/sv", "token"))
+    f = tmp_path / "p.json"
+    f.write_text(json.dumps({"movers": [
+        proposal(id="high-thing", name="High Thing", url="https://high.example.org"),
+        proposal(id="low-thing", name="Low Thing", url="https://low.example.org",
+                 notes={"take": "Why it matters, privately.", "score": low}),
+    ]}))
+    with pytest.raises(SystemExit) as done:
+        ingest.cmd_movers(["--propose", str(f), "--publish-min", "55"])
+    assert done.value.code == 0
+    statuses = {m["id"]: m.get("status") for m in sent[0]["movers"]}
+    assert statuses == {"high-thing": "watching", "low-thing": None}
+    report = json.loads(capsys.readouterr().out)
+    assert report["published"] == ["high-thing"] and report["scores"] == {"high-thing": 60, "low-thing": 50}
+
+
+def test_publish_min_needs_propose(tmp_path, monkeypatch):
+    monkeypatch.setattr(ingest, "connection", lambda: ("https://example.invalid/sv", "token"))
+    with pytest.raises(SystemExit):
+        ingest.cmd_movers([str(tmp_path / "p.json"), "--publish-min", "45"])
